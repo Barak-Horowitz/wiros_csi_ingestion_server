@@ -37,7 +37,6 @@ async def startup_event():
     global s3_client, dynamodb_resource, dynamodb_table
     
     LOG.info("Starting WiROS Ingestion Server...")
-    """
     try:
         # Initialize S3 client
         LOG.info("Initializing S3 client...")
@@ -79,7 +78,7 @@ async def startup_event():
     except Exception as e:
         LOG.error(f"Failed to initialize AWS clients: {e}")
         raise
-    """
+    
 class CSI_Metadata(BaseModel):
     mac_address : str
     timestamp : float
@@ -101,10 +100,17 @@ class CSI_Metadata(BaseModel):
 @app.post("/ingest")
 async def ingest_csi_data(
     metadata = Form(...),
-    save_to_server: bool = Form(...),
-    save_to_s3_storage: bool = Form(...),
+    save_to_server: str = Form(...),
+    save_to_s3_storage: str = Form(...),
     csi_blob = File(...)
 ):
+    # Convert string boolean values to actual booleans
+    save_to_server_bool = save_to_server.lower() in ['true', '1', 'yes']
+    save_to_s3_storage_bool = save_to_s3_storage.lower() in ['true', '1', 'yes']
+    
+    LOG.info(f"Received: save_to_server='{save_to_server}' -> {save_to_server_bool}")
+    LOG.info(f"Received: save_to_s3_storage='{save_to_s3_storage}' -> {save_to_s3_storage_bool}")
+    
     # 422 error code means "your inputed data was invalid, something is wrong on your end"
     # parse received CSI metadata
     try:
@@ -117,13 +123,14 @@ async def ingest_csi_data(
         raise HTTPException(status_code=422, detail="No metadata provided")
      
     # validate the metadata matches accepted schema
-    # and grab the earliest timestamp. and the device name so we can properly name the file 
+    # and grab the earliest timestamp and device name so we can properly name the file 
     earliest_timestamp = float('inf')
     device_name = ""
     validated_metadata: List[CSI_Metadata] = []
     for packet in metadata_list:
         try:
             validated_packet = CSI_Metadata(**packet)
+            validated_packet.timestamp = int(validated_packet.timestamp * 1000) # save the timestamp to the millisecond
             validated_metadata.append(validated_packet)
             earliest_timestamp = min(earliest_timestamp, validated_packet.timestamp)
             device_name = validated_packet.device_name
@@ -132,16 +139,27 @@ async def ingest_csi_data(
             raise HTTPException(status_code=422, detail="Invalid metadata packet")
     (file_name, path_name) = get_file_name_and_location(device_name, earliest_timestamp)
 
-    # if requested to save this data locally, save it locally
-    if(save_to_server):
+    if(save_to_server_bool):
         # if file save was unsuccessful return in error
         if(save_upload_file(path_name, file_name, csi_blob) == False):
             LOG.error(f"unable to save file {file_name} to following location {path_name}")
             raise HTTPException(status_code=500, detail = "Unable to save file localy")
-    
-    # TODO: 
-    # if requested to save the data to S3 storage then upload the metadata to      
-    # dynamoDB and the file to S3 storage 
+        # TODO: FIGURE OUT WHAT TO DO WITH METADATA LOCALLY 
+    if(save_to_s3_storage_bool):
+        # ensure file is at head
+        csi_blob.file.seek(0)
+        # batch write metadata into dynamoDB 
+        with dynamodb_table.batch_writer() as batch:
+            for validated_packet in validated_metadata:
+                batch.put_item(Item=validated_packet.dict())
+        # save file into S3 storage 
+        # THIS IS A MASSIVE BOTTLENECK, IT WILL TAKE ANYWHERE FROM 1-60 SECS FOR US TO RECEIVE A RESPONSE HERE
+        # SHOULD WE FAIL SILENTLY/HANDLE THIS ANY OTHER WAY?
+        try:
+            s3_client.upload_fileobj(csi_blob.file, S3_BUCKET_NAME, path_name + file_name)
+        except Exception as e:
+            LOG.error(f"unable to upload file {file_name} to S3 storage {e}")
+            raise HTTPException(status_code=500, detail="unable to save file to s3 server")
     
     # return success message
     return {"message": "File ingested successfully", "filename": file_name}
@@ -161,18 +179,17 @@ def save_upload_file(path: str, file_name: str, file) -> bool:
         
         return True
     except Exception as e:
-        print(f"Error saving file: {e}")
+        LOG.error(f"Error saving file: {e}")
         return False
 
 """ helper function returning filename and location of file """ 
 def get_file_name_and_location(device_name, timestamp):
-    dt = datetime.fromtimestamp(timestamp)
-    millisecond = int(dt.microsecond // 1000)
+    dt = datetime.fromtimestamp(timestamp // 1000) # expected to be in seconds 
     file_name = (
          f"{device_name}_"
         f"{dt.year}_{dt.month:02d}_{dt.day:02d}_"
-        f"{dt.hour:02d}_{dt.minute:02d}_{dt.second:02d}_"
-        f"{millisecond:03d}"
+        f"{dt.hour:02d}_{dt.minute:02d}_{dt.second:02d}"
+        f".bin"
     )
     path_name = (
         f"csi-data/"

@@ -3,9 +3,9 @@ Configuration constants for WiROS Data Ingestion Server
 """
 
 # AWS Configuration
-AWS_REGION = "us-east-1"  # Change to your preferred region
-S3_BUCKET_NAME = "wiros-csi-data"  # Change to your S3 bucket name
-DYNAMODB_TABLE_NAME = "wiros-metadata"  # Change to your DynamoDB table name
+AWS_REGION = "us-east-2"  # Change to your preferred region
+S3_BUCKET_NAME = "wcsng-csi-training-data"  # Change to your S3 bucket name
+DYNAMODB_TABLE_NAME = "wcsng-csi-metadata"  # Change to your DynamoDB table name
 
 # S3 Configuration
 S3_KEY_PREFIX = "csi-data/"  # Prefix for S3 object keys
