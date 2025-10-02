@@ -8,6 +8,7 @@ from datetime import datetime
 import logging
 from typing import Optional
 from fastapi import FastAPI, HTTPException, Form, File
+from fastapi.responses import StreamingResponse
 import uvicorn
 import boto3
 from pydantic import BaseModel, ValidationError
@@ -19,6 +20,8 @@ from _CONST import (
 from typing import List
 import json
 import os
+import io 
+import zipfile
 
 app = FastAPI(title="WiROS Ingestion Server")
 
@@ -96,7 +99,9 @@ class CSI_Metadata(BaseModel):
     fc : int
     sequence_number : int 
 
-
+    
+    # if timestamps are given request on partition and sort keys
+""" ENDPOINT TO UPLOAD DATA TO S3 OR STORE LOCALLY ON SERVER"""
 @app.post("/ingest")
 async def ingest_csi_data(
     metadata = Form(...),
@@ -138,6 +143,10 @@ async def ingest_csi_data(
             LOG.error(f"JSON string invalid with schema {packet}")
             raise HTTPException(status_code=422, detail="Invalid metadata packet")
     (file_name, path_name) = get_file_name_and_location(device_name, earliest_timestamp)
+    
+    for packet in validated_metadata:
+        # update packets with location on s3 server
+        validated_metadata.location_on_s3_server = path_name + file_name
 
     if(save_to_server_bool):
         # if file save was unsuccessful return in error
